@@ -1,0 +1,34 @@
+# ============================================================
+# Experiment 5: Multi-Aspect Reward Decomposition
+# ============================================================
+# Compares holistic vs decomposed multi-aspect DPO.
+# Ablates reward weights α_p, α_t, α_v, α_m.
+
+defaults:
+  - base
+
+experiment:
+  name: "exp5_multi_aspect"
+  description: "Multi-aspect reward decomposition ablation"
+
+scoring:
+  strategy: "multi_aspect"
+
+training:
+  max_steps: 2000
+  wandb_run_name: "exp5-multi-aspect-decomposition"
+
+  # Ablation grid over reward weights
+  ablations:
+    reward_weights:
+      - {prompt_adherence: 1.0, temporal_consistency: 0.0, visual_quality: 0.0, motion_naturalness: 0.0}
+      - {prompt_adherence: 0.0, temporal_consistency: 1.0, visual_quality: 0.0, motion_naturalness: 0.0}
+      - {prompt_adherence: 0.0, temporal_consistency: 0.0, visual_quality: 1.0, motion_naturalness: 0.0}
+      - {prompt_adherence: 0.0, temporal_consistency: 0.0, visual_quality: 0.0, motion_naturalness: 1.0}
+      - {prompt_adherence: 0.25, temporal_consistency: 0.25, visual_quality: 0.25, motion_naturalness: 0.25}
+      - {prompt_adherence: 0.3, temporal_consistency: 0.3, visual_quality: 0.2, motion_naturalness: 0.2}
+    scoring_strategy: ["holistic", "multi_aspect"]
+
+eval:
+  metrics: ["fvd", "clip_score", "vbench"]
+  eval_output_dir: "outputs/exp5"

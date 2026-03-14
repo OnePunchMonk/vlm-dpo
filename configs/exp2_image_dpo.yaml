@@ -1,0 +1,29 @@
+# ============================================================
+# Experiment 2: Image DPO on Flux.2
+# ============================================================
+# Validates the DPO method on images before scaling to video.
+# LoRA-DPO on Flux.2 with 10K InternVL-U preference pairs.
+
+defaults:
+  - base
+
+experiment:
+  name: "exp2_image_dpo"
+  description: "Image DPO on Flux.2 with VLM preferences"
+
+model:
+  # Use image model as primary
+  primary_model_id: "black-forest-labs/FLUX.1-dev"
+  modality: "image"
+
+data:
+  num_pairs: 10000
+  output_dir: "data/exp2_image_pairs"
+
+training:
+  max_steps: 5000
+  wandb_run_name: "exp2-flux2-image-dpo"
+
+eval:
+  metrics: ["fid", "clip_score", "human_preference"]
+  eval_output_dir: "outputs/exp2"

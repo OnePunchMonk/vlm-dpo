@@ -1,0 +1,100 @@
+# ============================================================
+# VLM-DPO: Base Configuration
+# ============================================================
+# Default hyperparameters — experiment configs override these.
+
+model:
+  # Primary video model
+  video_model_id: "Wan-AI/Wan2.1-T2V-1.3B"
+  # Image model for cross-modal DPO
+  image_model_id: "black-forest-labs/FLUX.1-dev"
+  # VLM preference oracle
+  vlm_model_id: "OpenGVLab/InternVL2_5-4B"
+  # Secondary video model (generalization)
+  secondary_video_model_id: "THUDM/CogVideoX-5b"
+  # Precision
+  dtype: "bfloat16"
+  # Device map strategy
+  device_map: "auto"
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+  bias: "none"
+
+dpo:
+  # DPO temperature
+  beta: 0.1
+  # Label smoothing (0 = hard labels)
+  label_smoothing: 0.0
+  # Reference model: "frozen" (default) or "ema"
+  reference_strategy: "frozen"
+
+scoring:
+  # Strategy: "holistic", "multi_aspect", "cot"
+  strategy: "multi_aspect"
+  # Multi-aspect reward weights
+  reward_weights:
+    prompt_adherence: 0.3
+    temporal_consistency: 0.3
+    visual_quality: 0.2
+    motion_naturalness: 0.2
+  # Number of frames to sample for VLM scoring
+  num_score_frames: 8
+  # Temperature for VLM generation
+  vlm_temperature: 0.1
+  # Max tokens for VLM response
+  vlm_max_tokens: 512
+
+training:
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_steps: 100
+  max_steps: 2000
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  effective_batch_size: 8  # batch_size * grad_accum
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  seed: 42
+  # Checkpointing
+  save_steps: 500
+  save_total_limit: 3
+  # Logging
+  log_steps: 10
+  wandb_project: "vlm-dpo"
+  wandb_run_name: null  # auto-generated if null
+
+data:
+  # Prompt source: path to JSONL file with prompts
+  prompt_file: "data/prompts.jsonl"
+  # Number of preference pairs to generate
+  num_pairs: 5000
+  # Output directory for generated pairs
+  output_dir: "data/preference_pairs"
+  # Video generation params
+  video_num_frames: 16
+  video_height: 480
+  video_width: 848
+  video_fps: 16
+  # Image generation params
+  image_height: 1024
+  image_width: 1024
+  # Number of diffusion steps for generation
+  num_inference_steps: 30
+  # Guidance scale
+  guidance_scale: 7.5
+  # Dataloader
+  num_workers: 4
+
+eval:
+  # Metrics to compute
+  metrics: ["fvd", "clip_score", "vbench"]
+  # Number of samples for evaluation
+  num_eval_samples: 100
+  # Directory for evaluation outputs
+  eval_output_dir: "outputs/eval"
+  # VBench dimensions (subset for speed)
+  vbench_dimensions: ["subject_consistency", "motion_smoothness", "aesthetic_quality"]

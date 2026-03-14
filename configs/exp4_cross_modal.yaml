@@ -1,0 +1,31 @@
+# ============================================================
+# Experiment 4: Cross-Modal Transfer (Image → Video)
+# ============================================================
+# Tests whether image DPO LoRA initializes video DPO better.
+
+defaults:
+  - base
+
+experiment:
+  name: "exp4_cross_modal"
+  description: "Cross-modal LoRA transfer from Flux.2 to Wan2.1"
+
+transfer:
+  # Path to the trained image DPO LoRA checkpoint
+  source_lora_path: "outputs/exp2/best_checkpoint"
+  # Layer mapping strategy: "name_match", "position_match", "selective"
+  mapping_strategy: "name_match"
+  # Which layers to transfer (null = all matching layers)
+  transfer_layers: null
+  # Freeze transferred layers for N steps before unfreezing
+  freeze_transferred_steps: 200
+
+training:
+  max_steps: 2000
+  wandb_run_name: "exp4-cross-modal-transfer"
+
+eval:
+  metrics: ["fvd", "clip_score", "vbench"]
+  eval_output_dir: "outputs/exp4"
+  # Compare against exp3 (from-scratch) baseline
+  baseline_results: "outputs/exp3/metrics.json"
