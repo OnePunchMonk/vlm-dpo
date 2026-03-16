@@ -15,31 +15,48 @@ set -euo pipefail
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 EXP_DIR="outputs/exp2"
 LOG_DIR="${EXP_DIR}/logs"
-CHECKPOINT_DIR="${EXP_DIR}/checkpoints"
 
-mkdir -p "$LOG_DIR" "$CHECKPOINT_DIR"
+mkdir -p "$LOG_DIR"
 
 echo "=== VLM-DPO: Experiment 2 — Image DPO on Flux.2 ==="
 echo "Timestamp: $TIMESTAMP"
 echo "Logging to: $LOG_DIR"
 
 # ------------------------------------------------------------------
-# Step 1: Generate 10K image preference pairs
+# Step 1: Prepare prompt dataset (10K prompts for image DPO)
 # ------------------------------------------------------------------
 echo ""
-echo "[1/4] Generating 10K image preference pairs with Flux.2..."
-vlm-dpo generate \
+echo "[1/5] Preparing prompt dataset..."
+if [ ! -f "data/prompts.jsonl" ] || [ "$(wc -l < data/prompts.jsonl)" -lt 10000 ]; then
+    python scripts/prepare_prompts.py \
+        --output data/prompts.jsonl \
+        --num-prompts 10000 \
+        --seed 42 \
+        2>&1 | tee "${LOG_DIR}/prepare_prompts_${TIMESTAMP}.log"
+else
+    echo "  Prompt dataset already exists ($(wc -l < data/prompts.jsonl) prompts). Skipping."
+fi
+
+# ------------------------------------------------------------------
+# Step 2: Generate 10K image preference pairs (with checkpointing)
+# ------------------------------------------------------------------
+echo ""
+echo "[2/5] Generating 10K image preference pairs with Flux.2..."
+python scripts/generate_pairs.py \
     --config configs/exp2_image_dpo.yaml \
-    -v \
+    --output-dir data/exp2_image_pairs \
+    --num-pairs 10000 \
+    --checkpoint-every 100 \
+    --resume \
     2>&1 | tee "${LOG_DIR}/generate_${TIMESTAMP}.log"
 
 echo "Image pair generation complete."
 
 # ------------------------------------------------------------------
-# Step 2: Train main image DPO model
+# Step 3: Train main image DPO model
 # ------------------------------------------------------------------
 echo ""
-echo "[2/4] Training LoRA-DPO on Flux.2 (main run)..."
+echo "[3/5] Training LoRA-DPO on Flux.2 (main run)..."
 vlm-dpo train \
     --config configs/exp2_image_dpo.yaml \
     -v \
@@ -48,10 +65,10 @@ vlm-dpo train \
 echo "Main training complete."
 
 # ------------------------------------------------------------------
-# Step 3: Evaluate
+# Step 4: Evaluate
 # ------------------------------------------------------------------
 echo ""
-echo "[3/4] Evaluating image DPO model..."
+echo "[4/5] Evaluating image DPO model..."
 vlm-dpo evaluate \
     --config configs/exp2_image_dpo.yaml \
     -v \
@@ -60,10 +77,10 @@ vlm-dpo evaluate \
 echo "Evaluation complete."
 
 # ------------------------------------------------------------------
-# Step 4: Verify checkpoint for Exp 4 transfer
+# Step 5: Verify checkpoint for Exp 4 transfer
 # ------------------------------------------------------------------
 echo ""
-echo "[4/4] Verifying checkpoint for cross-modal transfer..."
+echo "[5/5] Verifying checkpoint for cross-modal transfer..."
 
 if [ -d "${EXP_DIR}/best_checkpoint" ]; then
     echo "Best checkpoint found at: ${EXP_DIR}/best_checkpoint"
@@ -75,6 +92,7 @@ fi
 
 echo ""
 echo "Outputs:"
+echo "  Prompts:        data/prompts.jsonl"
 echo "  Image pairs:    data/exp2_image_pairs/"
 echo "  Checkpoints:    ${EXP_DIR}/"
 echo "  Metrics:        ${EXP_DIR}/metrics.json"

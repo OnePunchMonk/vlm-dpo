@@ -24,31 +24,50 @@ echo "Timestamp: $TIMESTAMP"
 echo "Logging to: $LOG_DIR"
 
 # ------------------------------------------------------------------
-# Step 1: Generate 500 video pairs with Wan2.1
+# Step 1: Prepare prompt dataset (500 diverse prompts)
 # ------------------------------------------------------------------
 echo ""
-echo "[1/5] Generating 500 video pairs..."
-vlm-dpo generate \
+echo "[1/6] Preparing prompt dataset..."
+if [ ! -f "data/prompts.jsonl" ] || [ "$(wc -l < data/prompts.jsonl)" -lt 500 ]; then
+    python scripts/prepare_prompts.py \
+        --output data/prompts.jsonl \
+        --num-prompts 500 \
+        --seed 42 \
+        2>&1 | tee "${LOG_DIR}/prepare_prompts_${TIMESTAMP}.log"
+else
+    echo "  Prompt dataset already exists ($(wc -l < data/prompts.jsonl) prompts). Skipping."
+fi
+
+# ------------------------------------------------------------------
+# Step 2: Generate 500 video pairs with checkpointing
+# ------------------------------------------------------------------
+echo ""
+echo "[2/6] Generating 500 video pairs (with resume support)..."
+python scripts/generate_pairs.py \
     --config configs/exp1_vlm_agreement.yaml \
-    -v \
+    --output-dir data/exp1_vlm_agreement \
+    --num-pairs 500 \
+    --checkpoint-every 25 \
+    --resume \
     2>&1 | tee "${LOG_DIR}/generate_${TIMESTAMP}.log"
 
 echo "Video pair generation complete."
 
 # ------------------------------------------------------------------
-# Step 2: Score with all three strategies (for ablation)
+# Step 3: Re-score with all three strategies (for ablation)
 # ------------------------------------------------------------------
 echo ""
-echo "[2/5] Scoring with all three VLM strategies..."
+echo "[3/6] Scoring with all three VLM strategies..."
 
 for strategy in holistic multi_aspect cot; do
     echo ""
     echo "  --- Scoring strategy: ${strategy} ---"
-    vlm-dpo generate \
+    python scripts/generate_pairs.py \
         --config configs/exp1_vlm_agreement.yaml \
-        --overrides \
-            "scoring.strategy=${strategy}" \
-            "data.output_dir=data/exp1_${strategy}" \
+        --output-dir "data/exp1_${strategy}" \
+        --num-pairs 500 \
+        --scoring-strategy "${strategy}" \
+        --resume \
         2>&1 | tee "${LOG_DIR}/score_${strategy}_${TIMESTAMP}.log"
     echo "  Strategy ${strategy} complete."
 done
@@ -56,68 +75,46 @@ done
 echo "All scoring strategies complete."
 
 # ------------------------------------------------------------------
-# Step 3: Generate HTML for human evaluation
+# Step 4: Generate HTML for human evaluation
 # ------------------------------------------------------------------
 echo ""
-echo "[3/5] Generating human evaluation interface..."
-
-# The evaluate command with human_preference metric will generate HTML
-# comparisons for annotation. The HTML files go to human_eval_dir.
-vlm-dpo evaluate \
-    --config configs/exp1_vlm_agreement.yaml \
-    --overrides "eval.eval_output_dir=${HUMAN_EVAL_DIR}" \
-    -v \
+echo "[4/6] Generating human evaluation interface..."
+python scripts/prepare_human_eval.py generate \
+    --pairs-dir data/exp1_vlm_agreement \
+    --output-dir "${HUMAN_EVAL_DIR}" \
+    --num-pairs 500 \
     2>&1 | tee "${LOG_DIR}/human_eval_gen_${TIMESTAMP}.log"
 
-echo "Human evaluation interface generated at: ${HUMAN_EVAL_DIR}"
 echo ""
 echo "============================================================"
 echo "  ACTION REQUIRED: Collect human annotations"
-echo "  1. Open ${HUMAN_EVAL_DIR}/*.html in a browser"
+echo "  1. Open ${HUMAN_EVAL_DIR}/comparison_page_*.html in a browser"
 echo "  2. Have 3 annotators label each pair (A wins / B wins / Tie)"
-echo "  3. Save results to data/human_annotations.jsonl"
-echo "  4. Then run step 4 below"
+echo "  3. Export annotations from each page (click Export button)"
+echo "  4. Combine into: ${HUMAN_EVAL_DIR}/annotations.jsonl"
+echo "  5. Then run: bash scripts/run_exp1_agreement.sh"
 echo "============================================================"
-echo ""
 
 # ------------------------------------------------------------------
-# Step 4: Compute agreement metrics (run after human annotation)
+# Step 5: Compute agreement (run after human annotation)
 # ------------------------------------------------------------------
-# Uncomment this block after collecting human annotations:
-
-# HUMAN_ANNOTATIONS="data/human_annotations.jsonl"
-# if [ ! -f "$HUMAN_ANNOTATIONS" ]; then
-#     echo "ERROR: Human annotations not found at $HUMAN_ANNOTATIONS"
-#     echo "Complete human annotation before running this step."
-#     exit 1
-# fi
-#
-# echo "[4/5] Computing Cohen's kappa and agreement metrics..."
-#
-# for strategy in holistic multi_aspect cot; do
-#     echo "  Computing agreement for strategy: ${strategy}"
-#     vlm-dpo evaluate \
-#         --config configs/exp1_vlm_agreement.yaml \
-#         --overrides \
-#             "scoring.strategy=${strategy}" \
-#             "eval.eval_output_dir=${EXP_DIR}/agreement_${strategy}" \
-#         -v \
-#         2>&1 | tee "${LOG_DIR}/agreement_${strategy}_${TIMESTAMP}.log"
-# done
-#
-# echo "Agreement metrics computed."
+# This step is split into a separate script since it requires
+# human annotations to be collected first.
 
 # ------------------------------------------------------------------
-# Step 5: Summarize results
+# Step 6: Summary
 # ------------------------------------------------------------------
 echo ""
-echo "[5/5] Experiment 1 summary"
+echo "[6/6] Experiment 1 (Phase 1) summary"
 echo ""
 echo "Outputs:"
+echo "  Prompts:                   data/prompts.jsonl"
+echo "  Video pairs:               data/exp1_vlm_agreement/pairs/"
 echo "  VLM scores (holistic):     data/exp1_holistic/metadata.jsonl"
 echo "  VLM scores (multi_aspect): data/exp1_multi_aspect/metadata.jsonl"
 echo "  VLM scores (cot):          data/exp1_cot/metadata.jsonl"
-echo "  Human eval interface:      ${HUMAN_EVAL_DIR}/"
+echo "  Human eval HTML:           ${HUMAN_EVAL_DIR}/"
 echo "  Logs:                      ${LOG_DIR}/"
 echo ""
-echo "=== Experiment 1 complete! ==="
+echo "=== Experiment 1 (Phase 1) complete! ==="
+echo "=== Run scripts/run_exp1_agreement.sh after collecting human annotations ==="

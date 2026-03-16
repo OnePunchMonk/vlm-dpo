@@ -26,22 +26,40 @@ echo "Timestamp: $TIMESTAMP"
 echo "Logging to: $LOG_DIR"
 
 # ------------------------------------------------------------------
-# Step 1: Generate 5K video preference pairs
+# Step 1: Prepare prompt dataset (5K+ prompts)
 # ------------------------------------------------------------------
 echo ""
-echo "[1/6] Generating 5K video preference pairs with Wan2.1..."
-vlm-dpo generate \
+echo "[1/7] Preparing prompt dataset..."
+if [ ! -f "data/prompts.jsonl" ] || [ "$(wc -l < data/prompts.jsonl)" -lt 5000 ]; then
+    python scripts/prepare_prompts.py \
+        --output data/prompts.jsonl \
+        --num-prompts 5000 \
+        --seed 42 \
+        2>&1 | tee "${LOG_DIR}/prepare_prompts_${TIMESTAMP}.log"
+else
+    echo "  Prompt dataset already exists ($(wc -l < data/prompts.jsonl) prompts). Skipping."
+fi
+
+# ------------------------------------------------------------------
+# Step 2: Generate 5K video preference pairs (with checkpointing)
+# ------------------------------------------------------------------
+echo ""
+echo "[2/7] Generating 5K video preference pairs with Wan2.1..."
+python scripts/generate_pairs.py \
     --config configs/exp3_video_dpo.yaml \
-    -v \
+    --output-dir data/exp3_video_pairs \
+    --num-pairs 5000 \
+    --checkpoint-every 50 \
+    --resume \
     2>&1 | tee "${LOG_DIR}/generate_${TIMESTAMP}.log"
 
 echo "Video pair generation complete."
 
 # ------------------------------------------------------------------
-# Step 2: Train main model (β=0.1, rank=16, 5K pairs)
+# Step 3: Train main model (β=0.1, rank=16, 5K pairs)
 # ------------------------------------------------------------------
 echo ""
-echo "[2/6] Training main LoRA-DPO on Wan2.1..."
+echo "[3/7] Training main LoRA-DPO on Wan2.1..."
 vlm-dpo train \
     --config configs/exp3_video_dpo.yaml \
     -v \
@@ -50,13 +68,12 @@ vlm-dpo train \
 echo "Main training complete."
 
 # ------------------------------------------------------------------
-# Step 3: Train baselines
+# Step 4: Train baselines
 # ------------------------------------------------------------------
 echo ""
-echo "[3/6] Training baselines..."
+echo "[4/7] Training baselines..."
 
 # Baseline A: SFT-only (train on winner videos only, no preference signal)
-# Use beta=0 to effectively disable the DPO preference loss component
 echo "  --- Baseline: SFT-only ---"
 vlm-dpo train \
     --config configs/exp3_video_dpo.yaml \
@@ -66,7 +83,6 @@ vlm-dpo train \
     2>&1 | tee "${LOG_DIR}/train_sft_only_${TIMESTAMP}.log"
 
 # Baseline B: Random preference (shuffled winner/loser labels)
-# Generate new pairs with random scoring to create shuffled preferences
 echo "  --- Baseline: Random preference ---"
 vlm-dpo train \
     --config configs/exp3_video_dpo.yaml \
@@ -78,10 +94,10 @@ vlm-dpo train \
 echo "Baselines complete."
 
 # ------------------------------------------------------------------
-# Step 4: Ablation — DPO temperature (β)
+# Step 5: Ablation — DPO temperature (β)
 # ------------------------------------------------------------------
 echo ""
-echo "[4/6] Running β ablation..."
+echo "[5/7] Running β ablation..."
 
 for beta in 0.01 0.05 0.1 0.2 0.5; do
     echo "  --- Beta=${beta} ---"
@@ -96,10 +112,10 @@ done
 echo "Beta ablation complete."
 
 # ------------------------------------------------------------------
-# Step 5: Ablation — LoRA rank
+# Step 6: Ablation — LoRA rank + Data scale
 # ------------------------------------------------------------------
 echo ""
-echo "[5/6] Running LoRA rank ablation..."
+echo "[6/7] Running LoRA rank ablation..."
 
 for rank in 4 8 16 32 64; do
     echo "  --- Rank=${rank} ---"
@@ -114,9 +130,6 @@ done
 
 echo "Rank ablation complete."
 
-# ------------------------------------------------------------------
-# Step 5b: Ablation — Data scale
-# ------------------------------------------------------------------
 echo ""
 echo "  Running data scale ablation..."
 
@@ -133,12 +146,10 @@ done
 echo "Data scale ablation complete."
 
 # ------------------------------------------------------------------
-# Step 6: Evaluate all models
+# Step 7: Evaluate all models
 # ------------------------------------------------------------------
 echo ""
-echo "[6/6] Evaluating main model and ablations..."
-
-# Evaluate main model
+echo "[7/7] Evaluating main model..."
 vlm-dpo evaluate \
     --config configs/exp3_video_dpo.yaml \
     -v \
@@ -146,10 +157,11 @@ vlm-dpo evaluate \
 
 echo ""
 echo "Outputs:"
+echo "  Prompts:           data/prompts.jsonl"
 echo "  Video pairs:       data/exp3_video_pairs/"
+echo "  Generation stats:  data/exp3_video_pairs/generation_stats.json"
 echo "  Main checkpoint:   ${EXP_DIR}/best_checkpoint/"
-echo "  Ablation results:  ${ABLATION_DIR}/"
+echo "  Ablation logs:     ${LOG_DIR}/"
 echo "  Metrics:           ${EXP_DIR}/metrics.json"
-echo "  Logs:              ${LOG_DIR}/"
 echo ""
 echo "=== Experiment 3 complete! ==="
