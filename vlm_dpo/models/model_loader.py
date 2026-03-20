@@ -13,10 +13,24 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from diffusers import DiffusionPipeline, FluxPipeline
+    from diffusers import DiffusionPipeline, StableDiffusion3Pipeline, WanPipeline
     from transformers import AutoModel, AutoTokenizer
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Device detection
+# ---------------------------------------------------------------------------
+
+def _get_device() -> str:
+    """Return the best available device: cuda > mps > cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
 
 # ---------------------------------------------------------------------------
 # Dtype helpers
@@ -43,7 +57,7 @@ def load_wan21(
     model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
     dtype: str = "bfloat16",
     device_map: str = "auto",
-) -> "DiffusionPipeline":
+) -> "WanPipeline":
     """
     Load the Wan2.1 text-to-video pipeline.
 
@@ -55,20 +69,18 @@ def load_wan21(
     Returns:
         Loaded diffusers pipeline.
     """
-    from diffusers import AutoPipelineForText2Video
+    from diffusers import WanPipeline
 
     torch_dtype = _resolve_dtype(dtype)
     logger.info(f"Loading Wan2.1 from '{model_id}' (dtype={dtype})")
 
-    pipeline = AutoPipelineForText2Video.from_pretrained(
+    pipeline = WanPipeline.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
     )
 
-    if device_map == "auto":
-        pipeline.enable_model_cpu_offload()
-    else:
-        pipeline = pipeline.to(device_map)
+    device = _get_device() if device_map == "auto" else device_map
+    pipeline = pipeline.to(device)
 
     logger.info("Wan2.1 pipeline loaded successfully")
     return pipeline
@@ -100,10 +112,8 @@ def load_cogvideox(
         torch_dtype=torch_dtype,
     )
 
-    if device_map == "auto":
-        pipeline.enable_model_cpu_offload()
-    else:
-        pipeline = pipeline.to(device_map)
+    device = _get_device() if device_map == "auto" else device_map
+    pipeline = pipeline.to(device)
 
     logger.info("CogVideoX pipeline loaded successfully")
     return pipeline
@@ -114,12 +124,16 @@ def load_cogvideox(
 # ---------------------------------------------------------------------------
 
 def load_flux2(
-    model_id: str = "black-forest-labs/FLUX.1-dev",
+    model_id: str = "stabilityai/stable-diffusion-3-medium-diffusers",
     dtype: str = "bfloat16",
     device_map: str = "auto",
-) -> "FluxPipeline":
+) -> "StableDiffusion3Pipeline":
     """
-    Load the Flux.2 text-to-image pipeline.
+    Load the SD3-medium text-to-image pipeline for image DPO.
+
+    Replaces Flux.1-dev (32B) with SD3-medium (~2B, ~8GB in bfloat16),
+    which fits on Apple Silicon / 16GB GPUs and shares the DiT architecture
+    with Wan2.1, making cross-modal LoRA transfer (Exp 4) more compatible.
 
     Args:
         model_id: HuggingFace model identifier.
@@ -127,24 +141,22 @@ def load_flux2(
         device_map: Device placement strategy.
 
     Returns:
-        Loaded Flux pipeline.
+        Loaded SD3 pipeline.
     """
-    from diffusers import FluxPipeline
+    from diffusers import StableDiffusion3Pipeline
 
     torch_dtype = _resolve_dtype(dtype)
-    logger.info(f"Loading Flux.2 from '{model_id}' (dtype={dtype})")
+    logger.info(f"Loading SD3-medium from '{model_id}' (dtype={dtype})")
 
-    pipeline = FluxPipeline.from_pretrained(
+    pipeline = StableDiffusion3Pipeline.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
     )
 
-    if device_map == "auto":
-        pipeline.enable_model_cpu_offload()
-    else:
-        pipeline = pipeline.to(device_map)
+    device = _get_device() if device_map == "auto" else device_map
+    pipeline = pipeline.to(device)
 
-    logger.info("Flux.2 pipeline loaded successfully")
+    logger.info("SD3-medium pipeline loaded successfully")
     return pipeline
 
 
@@ -173,12 +185,20 @@ def load_internvl(
     torch_dtype = _resolve_dtype(dtype)
     logger.info(f"Loading InternVL from '{model_id}' (dtype={dtype})")
 
+    # device_map="auto" uses accelerate dispatch (CUDA-only).
+    # On MPS/CPU, load to CPU first then move to device.
+    device = _get_device() if device_map == "auto" else device_map
+    hf_device_map = "auto" if device == "cuda" else None
+
     model = AutoModel.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
-        device_map=device_map,
+        device_map=hf_device_map,
         trust_remote_code=True,
     )
+    if hf_device_map is None:
+        model = model.to(device)
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_id,
         trust_remote_code=True,

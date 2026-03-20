@@ -33,7 +33,7 @@ Requires-Dist: vlm-dpo[dev,eval]; extra == "all"
 
 # VLM-DPO: Aligning Video Diffusion Models via VLM Preference Optimization
 
-**First open-source framework for preference-based alignment of video diffusion models using Vision-Language Models as automated preference oracles.**
+**Framework for preference-based alignment of video diffusion models using Vision-Language Models as automated preference oracles.**
 
 ## Overview
 

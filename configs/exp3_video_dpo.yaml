@@ -12,18 +12,18 @@ experiment:
   description: "Video DPO on Wan2.1 — the main result"
 
 data:
-  num_pairs: 5000
+  num_pairs: 500
   output_dir: "data/exp3_video_pairs"
 
 training:
-  max_steps: 2000
+  max_steps: 500
   wandb_run_name: "exp3-wan21-video-dpo"
 
-  # Ablations to run
+  # Ablations to run — trimmed for 24GB unified memory
   ablations:
-    beta: [0.01, 0.05, 0.1, 0.2, 0.5]
-    lora_rank: [4, 8, 16, 32, 64]
-    num_pairs: [500, 1000, 2000, 5000]
+    beta: [0.05, 0.1, 0.2]
+    lora_rank: [8, 16, 32]
+    num_pairs: [100, 250, 500]
 
 eval:
   metrics: ["fvd", "clip_score", "vbench", "human_preference"]

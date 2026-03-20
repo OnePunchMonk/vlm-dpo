@@ -4,17 +4,17 @@
 # Default hyperparameters — experiment configs override these.
 
 model:
-  # Primary video model
-  video_model_id: "Wan-AI/Wan2.1-T2V-1.3B"
+  # Primary video model (diffusers-compatible repo)
+  video_model_id: "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
   # Image model for cross-modal DPO
   image_model_id: "black-forest-labs/FLUX.1-dev"
   # VLM preference oracle
   vlm_model_id: "OpenGVLab/InternVL2_5-4B"
   # Secondary video model (generalization)
   secondary_video_model_id: "THUDM/CogVideoX-5b"
-  # Precision
+  # Precision (bfloat16 supported on Apple MPS and CUDA)
   dtype: "bfloat16"
-  # Device map strategy
+  # Device map strategy: "auto" detects cuda > mps > cpu
   device_map: "auto"
 
 lora:
@@ -71,23 +71,24 @@ data:
   # Prompt source: path to JSONL file with prompts
   prompt_file: "data/prompts.jsonl"
   # Number of preference pairs to generate
-  num_pairs: 5000
+  num_pairs: 100
   # Output directory for generated pairs
   output_dir: "data/preference_pairs"
-  # Video generation params
-  video_num_frames: 16
+  # Video generation params — reduced for 24GB unified memory
+  # num_frames must be 4k+1 for Wan2.1 (5, 9, 13, 17, 21...)
+  video_num_frames: 5
   video_height: 480
   video_width: 848
-  video_fps: 16
-  # Image generation params
-  image_height: 1024
-  image_width: 1024
+  video_fps: 8
+  # Image generation params — reduced for SD3-medium
+  image_height: 512
+  image_width: 512
   # Number of diffusion steps for generation
-  num_inference_steps: 30
+  num_inference_steps: 50
   # Guidance scale
   guidance_scale: 7.5
-  # Dataloader
-  num_workers: 4
+  # Dataloader — keep low for MPS stability
+  num_workers: 2
 
 eval:
   # Metrics to compute

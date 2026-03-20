@@ -12,17 +12,18 @@ experiment:
   description: "Image DPO on Flux.2 with VLM preferences"
 
 model:
-  # Use image model as primary
-  primary_model_id: "black-forest-labs/FLUX.1-dev"
+  # SD3-medium replaces Flux.1-dev (32B→2B, fits in 24GB unified memory)
+  # DiT architecture is compatible with Wan2.1 for cross-modal transfer (Exp 4)
+  primary_model_id: "stabilityai/stable-diffusion-3-medium-diffusers"
   modality: "image"
 
 data:
-  num_pairs: 10000
+  num_pairs: 1000
   output_dir: "data/exp2_image_pairs"
 
 training:
-  max_steps: 5000
-  wandb_run_name: "exp2-flux2-image-dpo"
+  max_steps: 1000
+  wandb_run_name: "exp2-sd3-image-dpo"
 
 eval:
   metrics: ["fid", "clip_score", "human_preference"]

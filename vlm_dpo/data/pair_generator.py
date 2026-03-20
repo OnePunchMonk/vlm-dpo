@@ -111,41 +111,41 @@ class PairGenerator:
 
     @staticmethod
     def _save_video(frames: Any, path: Path) -> None:
-        """Save video frames to mp4 using torchvision."""
+        """Save video frames to mp4 (or a frames/ directory as fallback)."""
         import numpy as np
+        from PIL import Image
+
+        # Normalise to (T, H, W, C) uint8 numpy array
+        if isinstance(frames, list):
+            frames_np = np.stack([
+                np.array(f) if hasattr(f, "__array__") else f for f in frames
+            ])
+        elif isinstance(frames, torch.Tensor):
+            frames_np = frames.cpu().numpy()
+        elif isinstance(frames, np.ndarray):
+            frames_np = frames
+        else:
+            raise TypeError(f"Unsupported frames type: {type(frames)}")
+
+        if frames_np.ndim == 4 and frames_np.shape[1] in (1, 3):
+            frames_np = frames_np.transpose(0, 2, 3, 1)
+        if frames_np.dtype != np.uint8:
+            if frames_np.max() <= 1.0:
+                frames_np = (frames_np * 255).clip(0, 255).astype(np.uint8)
+            else:
+                frames_np = frames_np.clip(0, 255).astype(np.uint8)
 
         try:
             from torchvision.io import write_video
-
-            if isinstance(frames, list):
-                import numpy as np
-                frames_np = np.stack([
-                    np.array(f) if hasattr(f, '__array__') else f for f in frames
-                ])
-                video_tensor = torch.from_numpy(frames_np)
-            elif isinstance(frames, torch.Tensor):
-                video_tensor = frames
-            elif isinstance(frames, np.ndarray):
-                video_tensor = torch.from_numpy(frames)
-            else:
-                raise TypeError(f"Unsupported frames type: {type(frames)}")
-
-            # Ensure (T, H, W, C) uint8 format
-            if video_tensor.ndim == 4 and video_tensor.shape[1] in (1, 3):
-                video_tensor = video_tensor.permute(0, 2, 3, 1)
-            if video_tensor.dtype != torch.uint8:
-                if video_tensor.max() <= 1.0:
-                    video_tensor = (video_tensor * 255).clamp(0, 255).to(torch.uint8)
-                else:
-                    video_tensor = video_tensor.clamp(0, 255).to(torch.uint8)
-
+            video_tensor = torch.from_numpy(frames_np)
             write_video(str(path), video_tensor, fps=16)
-
-        except ImportError:
-            # Fallback: save frames as individual images
+        except Exception:
+            # Fallback: save frames as PNG images in a sibling directory
             frames_dir = path.with_suffix("")
             frames_dir.mkdir(parents=True, exist_ok=True)
-            logger.warning(f"torchvision.io unavailable, saving frames to {frames_dir}")
+            for i, frame in enumerate(frames_np):
+                Image.fromarray(frame).save(frames_dir / f"{i:04d}.png")
+            logger.warning(f"Saved {len(frames_np)} frames to {frames_dir}/")
 
     def generate_pairs(
         self,

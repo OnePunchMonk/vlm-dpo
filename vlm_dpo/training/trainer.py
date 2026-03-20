@@ -292,7 +292,7 @@ class DPOTrainer:
             batch_size=self.config.training.batch_size,
             shuffle=True,
             num_workers=self.config.data.num_workers,
-            pin_memory=True,
+            pin_memory=torch.cuda.is_available(),
         )
 
         # Prepare with accelerate

@@ -8,7 +8,7 @@ defaults:
 
 experiment:
   name: "exp4_cross_modal"
-  description: "Cross-modal LoRA transfer from Flux.2 to Wan2.1"
+  description: "Cross-modal LoRA transfer from SD3-medium to Wan2.1"
 
 transfer:
   # Path to the trained image DPO LoRA checkpoint
@@ -18,10 +18,10 @@ transfer:
   # Which layers to transfer (null = all matching layers)
   transfer_layers: null
   # Freeze transferred layers for N steps before unfreezing
-  freeze_transferred_steps: 200
+  freeze_transferred_steps: 100
 
 training:
-  max_steps: 2000
+  max_steps: 500
   wandb_run_name: "exp4-cross-modal-transfer"
 
 eval:

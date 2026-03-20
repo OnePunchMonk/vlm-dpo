@@ -80,6 +80,39 @@ def flush_gpu():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
+def load_media(path: Path, modality: str) -> any:
+    """Load saved media from disk for scoring.
+
+    For videos, handles both .mp4 files and the frames-directory fallback
+    (a directory of per-frame PNGs written when torchvision has no ffmpeg).
+    """
+    if modality == "image":
+        from PIL import Image
+        return Image.open(str(path)).convert("RGB")
+
+    # Video: try mp4 first, then frames directory fallback
+    frames_dir = path.with_suffix("")
+    if frames_dir.is_dir():
+        from PIL import Image
+        import numpy as np
+        frame_files = sorted(frames_dir.glob("*.png"))
+        if not frame_files:
+            raise FileNotFoundError(f"No frames found in {frames_dir}")
+        frames = np.stack([np.array(Image.open(f)) for f in frame_files])
+        return torch.from_numpy(frames)  # (T, H, W, C)
+
+    try:
+        from torchvision.io import read_video
+        frames, _, _ = read_video(str(path), output_format="THWC", pts_unit="sec")
+        return frames
+    except Exception:
+        import decord
+        vr = decord.VideoReader(str(path))
+        return torch.from_numpy(vr[:].asnumpy())
 
 
 def main():
@@ -163,20 +196,80 @@ def main():
 
     logger.info(f"Loaded {len(prompts)} prompts")
 
-    # ---------------------------------------------------------------
-    # Load models
-    # ---------------------------------------------------------------
-    logger.info("Loading diffusion pipeline...")
-    from vlm_dpo.models import load_wan21, load_flux2, load_internvl
-
     modality = getattr(config.model, "modality", "video")
+    ext = ".mp4" if modality == "video" else ".png"
+    height = config.data.image_height if modality == "image" else config.data.video_height
+    width = config.data.image_width if modality == "image" else config.data.video_width
+    gen_kwargs = {
+        "num_frames": config.data.video_num_frames,
+        "height": height,
+        "width": width,
+        "num_inference_steps": config.data.num_inference_steps,
+        "guidance_scale": config.data.guidance_scale,
+    }
+
+    stats = {"margins": [], "times": [], "errors": 0}
+    t_start = time.time()
+
+    # ---------------------------------------------------------------
+    # Phase 1: Generate all raw samples with the diffusion pipeline
+    # ---------------------------------------------------------------
+    logger.info("=== Phase 1: Loading diffusion pipeline for generation ===")
+    from vlm_dpo.models import load_wan21, load_flux2, load_internvl
 
     if modality == "image":
         pipeline = load_flux2(config.model.image_model_id, dtype=config.model.dtype)
     else:
         pipeline = load_wan21(config.model.video_model_id, dtype=config.model.dtype)
 
-    logger.info("Loading VLM scorer...")
+    from vlm_dpo.data import PairGenerator
+    generator = PairGenerator(
+        pipeline=pipeline,
+        scorer=None,
+        output_dir=str(output_dir),
+        modality=modality,
+    )
+
+    # Track which pairs still need generation (may have partial progress on resume)
+    pending_generation = []
+    for idx in range(start_idx, num_pairs):
+        pair_id = f"{idx:04d}"
+        if pair_id in completed_ids:
+            continue
+        pair_dir = pairs_dir / pair_id
+        sample_a_path = pair_dir / f"sample_a{ext}"
+        sample_b_path = pair_dir / f"sample_b{ext}"
+        if not (sample_a_path.exists() and sample_b_path.exists()):
+            pending_generation.append(idx)
+
+    for idx in tqdm(pending_generation, desc="Phase 1: Generating", total=len(pending_generation)):
+        pair_id = f"{idx:04d}"
+        prompt = prompts[idx]
+        seed_a = args.seed + idx * 2
+        seed_b = args.seed + idx * 2 + 1
+        pair_dir = pairs_dir / pair_id
+        pair_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            sample_a = generator._generate_sample(prompt, seed=seed_a, **gen_kwargs)
+            sample_b = generator._generate_sample(prompt, seed=seed_b, **gen_kwargs)
+            generator._save_media(sample_a, pair_dir / f"sample_a{ext}")
+            generator._save_media(sample_b, pair_dir / f"sample_b{ext}")
+        except Exception as e:
+            logger.error(f"Pair {pair_id} generation failed: {e}")
+            stats["errors"] += 1
+
+        if (idx + 1) % (args.batch_size * 10) == 0:
+            flush_gpu()
+
+    logger.info("Phase 1 complete. Releasing diffusion pipeline from memory.")
+    del pipeline, generator
+    flush_gpu()
+
+    # ---------------------------------------------------------------
+    # Phase 2: Score all saved samples with the VLM
+    # ---------------------------------------------------------------
+    logger.info("=== Phase 2: Loading VLM scorer ===")
     vlm_model, vlm_tokenizer = load_internvl(
         config.model.vlm_model_id,
         dtype=config.model.dtype,
@@ -191,72 +284,56 @@ def main():
         num_score_frames=config.scoring.num_score_frames,
     )
 
-    from vlm_dpo.data import PairGenerator
-    generator = PairGenerator(
-        pipeline=pipeline,
-        scorer=scorer,
-        output_dir=str(output_dir),
-        modality=modality,
-    )
+    pending_scoring = [
+        idx for idx in range(start_idx, num_pairs)
+        if f"{idx:04d}" not in completed_ids
+    ]
 
-    # ---------------------------------------------------------------
-    # Generation loop with checkpointing
-    # ---------------------------------------------------------------
-    ext = ".mp4" if modality == "video" else ".png"
-    height = config.data.image_height if modality == "image" else config.data.video_height
-    width = config.data.image_width if modality == "image" else config.data.video_width
-
-    gen_kwargs = {
-        "num_frames": config.data.video_num_frames,
-        "height": height,
-        "width": width,
-        "num_inference_steps": config.data.num_inference_steps,
-        "guidance_scale": config.data.guidance_scale,
-    }
-
-    stats = {"margins": [], "times": [], "errors": 0}
-    t_start = time.time()
-
-    for idx in tqdm(range(start_idx, num_pairs), desc="Generating pairs", initial=start_idx, total=num_pairs):
+    for idx in tqdm(pending_scoring, desc="Phase 2: Scoring", total=len(pending_scoring)):
         pair_id = f"{idx:04d}"
-
-        # Skip if already completed (safety check for resume)
-        if pair_id in completed_ids:
-            continue
-
         prompt = prompts[idx]
         seed_a = args.seed + idx * 2
         seed_b = args.seed + idx * 2 + 1
         pair_dir = pairs_dir / pair_id
-        pair_dir.mkdir(parents=True, exist_ok=True)
+
+        sample_a_path = pair_dir / f"sample_a{ext}"
+        sample_b_path = pair_dir / f"sample_b{ext}"
+
+        if not (sample_a_path.exists() and sample_b_path.exists()):
+            logger.warning(f"Pair {pair_id} missing generated samples, skipping scoring.")
+            stats["errors"] += 1
+            continue
 
         t_pair = time.time()
-
         try:
-            # Generate two samples
-            sample_a = generator._generate_sample(prompt, seed=seed_a, **gen_kwargs)
-            sample_b = generator._generate_sample(prompt, seed=seed_b, **gen_kwargs)
+            sample_a = load_media(sample_a_path, modality)
+            sample_b = load_media(sample_b_path, modality)
 
-            # Score and compare
             comparison = scorer.compare_pair(
                 sample_a, sample_b, prompt,
                 strategy=scoring_strategy,
                 modality=modality,
             )
 
-            # Determine winner/loser
             if comparison["winner"] == 0:
-                winner, loser = sample_a, sample_b
+                winner_src, loser_src = sample_a_path, sample_b_path
+                winner_seed, loser_seed = seed_a, seed_b
             else:
-                winner, loser = sample_b, sample_a
+                winner_src, loser_src = sample_b_path, sample_a_path
+                winner_seed, loser_seed = seed_b, seed_a
 
-            # Save media
             winner_path = pair_dir / f"winner{ext}"
             loser_path = pair_dir / f"loser{ext}"
-            generator._save_media(winner, winner_path)
-            generator._save_media(loser, loser_path)
 
-            # Build and save metadata (incremental)
+            # Rename both the file and its frames-dir fallback if present
+            for src, dst in [(winner_src, winner_path), (loser_src, loser_path)]:
+                src_frames = src.with_suffix("")
+                dst_frames = dst.with_suffix("")
+                if src.exists():
+                    src.rename(dst)
+                if src_frames.is_dir():
+                    src_frames.rename(dst_frames)
+
             entry = {
                 "pair_id": pair_id,
                 "prompt": prompt,
@@ -268,10 +345,7 @@ def main():
                 },
                 "margin": comparison["margin"],
                 "strategy": comparison["strategy"],
-                "seeds": {
-                    "winner_seed": seed_a if comparison["winner"] == 0 else seed_b,
-                    "loser_seed": seed_b if comparison["winner"] == 0 else seed_a,
-                },
+                "seeds": {"winner_seed": winner_seed, "loser_seed": loser_seed},
             }
 
             append_metadata(output_dir, entry)
@@ -282,29 +356,24 @@ def main():
             stats["times"].append(elapsed)
 
         except Exception as e:
-            logger.error(f"Pair {pair_id} failed: {e}")
+            logger.error(f"Pair {pair_id} scoring failed: {e}")
             stats["errors"] += 1
             continue
 
-        # Periodic progress report
         if (idx + 1) % args.checkpoint_every == 0:
             done = len(completed_ids)
-            avg_margin = sum(stats["margins"][-args.checkpoint_every:]) / min(len(stats["margins"]), args.checkpoint_every)
-            avg_time = sum(stats["times"][-args.checkpoint_every:]) / min(len(stats["times"]), args.checkpoint_every)
-            elapsed_total = time.time() - t_start
+            avg_time = sum(stats["times"][-args.checkpoint_every:]) / max(len(stats["times"]), 1)
             remaining = (num_pairs - done) * avg_time
-
             logger.info(
                 f"Progress: {done}/{num_pairs} pairs | "
-                f"Avg margin: {avg_margin:.3f} | "
                 f"Avg time/pair: {avg_time:.1f}s | "
                 f"Errors: {stats['errors']} | "
                 f"ETA: {remaining/3600:.1f}h"
             )
 
-        # Periodic GPU flush
-        if (idx + 1) % (args.batch_size * 10) == 0:
-            flush_gpu()
+    logger.info("Phase 2 complete. Releasing VLM from memory.")
+    del vlm_model, vlm_tokenizer, scorer
+    flush_gpu()
 
     # ---------------------------------------------------------------
     # Final summary
